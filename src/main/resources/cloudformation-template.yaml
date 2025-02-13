@@ -1,0 +1,169 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Parameters:
+  Password:
+    Type: String
+  S3BucketRegion:
+    Type: String
+    Default: "us-west-2"
+    Description: "Region where the S3 bucket is located"
+  Environment:
+    Type: String
+    Default: "dev"
+    Description: "Environment name for resource uniqueness"
+
+Resources:
+  OneTimePassword:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !Sub "OneTimePassword-${Environment}-${AWS::Region}"
+      SecretString: !Sub '{"password":"${AWS::Region}-generated-password"}'
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/user-creation-logs-${Environment}"
+      RetentionInDays: 14
+
+  LambdaLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref LambdaLogGroup
+      LogStreamName: !Sub "user-creation-stream-${Environment}"
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      FunctionName: !Sub "LogUserCreation-${Environment}"
+      Handler: "org.example.LogUserCreationHandler::handleRequest"
+      Role: !GetAtt "LambdaExecutionRole.Arn"
+      Runtime: "java17"
+      Code:
+        S3Bucket: "mawule-new-bucket-1"
+        S3Key: "AutomationOfIAM-1.0-SNAPSHOT.jar"
+      Environment:
+        Variables:
+          LOG_GROUP_NAME: !Ref LambdaLogGroup
+          LOG_STREAM_NAME: !Ref LambdaLogStream
+          S3_BUCKET_REGION: !Ref S3BucketRegion
+          ENVIRONMENT: !Ref Environment
+      Timeout: 30
+
+  S3UserGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub "S3UserGroupV3-${Environment}"
+
+  EC2UserGroup:
+    Type: AWS::IAM::Group
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      GroupName: !Sub "EC2UserGroup-v3-${Environment}"
+
+  S3UserGroupPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "S3ReadOnlyAccessPolicy-v3-${Environment}"
+      Groups:
+        - Ref: "S3UserGroup"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "s3:ListBucket"
+              - "s3:GetObject"
+            Resource: "*"
+
+  EC2UserGroupPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "EC2ReadOnlyAccessPolicy-v3-${Environment}"
+      Groups:
+        - Ref: "EC2UserGroup"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "ec2:DescribeInstances"
+            Resource: "*"
+
+  EC2User:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "ec2-user-v3-${Environment}"
+      Groups:
+        - Ref: "EC2UserGroup"
+      Tags:
+        - Key: "email"
+          Value: "gabrielEC2@gmail.com"
+
+  S3User:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "s3-user-v3-${Environment}"
+      Groups:
+        - Ref: "S3UserGroup"
+      Tags:
+        - Key: "email"
+          Value: "gabrielS3@gmail.com"
+
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "NewUserCreationRule-${Environment}"
+      EventPattern:
+        source:
+          - "aws.iam"
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        detail:
+          eventName:
+            - "CreateUser"
+      Targets:
+        - Arn: !GetAtt "LambdaFunction.Arn"
+          Id: "LambdaFunctionTarget"
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: !Sub "LogUserCreationPolicy-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "secretsmanager:GetSecretValue"
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                  - "cloudtrail:LookupEvents"
+                  - "iam:ListUserTags"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                Resource: !Sub "arn:aws:s3:::mawule-new-bucket-1/*"
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref LambdaFunction
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt EventBridgeRule.Arn
