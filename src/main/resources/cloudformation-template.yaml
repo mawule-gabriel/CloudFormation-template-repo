@@ -2,10 +2,6 @@ AWSTemplateFormatVersion: "2010-09-09"
 Parameters:
   Password:
     Type: String
-  S3BucketRegion:
-    Type: String
-    Default: "us-west-2"
-    Description: "Region where the S3 bucket is located"
   Environment:
     Type: String
     Default: "dev"
@@ -17,27 +13,15 @@ Resources:
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      Name: !Sub "OneTimePassword-${Environment}-${AWS::Region}"
-      SecretString: !Sub '{"password":"${AWS::Region}-generated-password"}'
-
-  LambdaLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/user-creation-logs-${Environment}"
-      RetentionInDays: 14
-
-  LambdaLogStream:
-    Type: AWS::Logs::LogStream
-    Properties:
-      LogGroupName: !Ref LambdaLogGroup
-      LogStreamName: !Sub "user-creation-stream-${Environment}"
+      Name: !Sub "OneTimePassword-v5-${Environment}-${AWS::Region}"
+      SecretString: !Sub '{"password":"${Password}"}'
 
   LambdaFunction:
     Type: AWS::Lambda::Function
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      FunctionName: !Sub "LogUserCreation-${Environment}"
+      FunctionName: !Sub "LogUserCreation-v5-${Environment}"
       Handler: "org.example.LogUserCreationHandler::handleRequest"
       Role: !GetAtt "LambdaExecutionRole.Arn"
       Runtime: "java17"
@@ -46,28 +30,27 @@ Resources:
         S3Key: "AutomationOfIAM-1.0-SNAPSHOT.jar"
       Environment:
         Variables:
-          LOG_GROUP_NAME: !Ref LambdaLogGroup
-          LOG_STREAM_NAME: !Ref LambdaLogStream
-          S3_BUCKET_REGION: !Ref S3BucketRegion
           ENVIRONMENT: !Ref Environment
+          CUSTOM_REGION: !Ref "AWS::Region"
       Timeout: 30
+      MemorySize: 512
 
   S3UserGroup:
     Type: AWS::IAM::Group
     Properties:
-      GroupName: !Sub "S3UserGroupV3-${Environment}"
+      GroupName: !Sub "S3UserGroupV5-${Environment}"
 
   EC2UserGroup:
     Type: AWS::IAM::Group
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      GroupName: !Sub "EC2UserGroup-v3-${Environment}"
+      GroupName: !Sub "EC2UserGroup-v5-${Environment}"
 
   S3UserGroupPolicy:
     Type: AWS::IAM::Policy
     Properties:
-      PolicyName: !Sub "S3ReadOnlyAccessPolicy-v3-${Environment}"
+      PolicyName: !Sub "S3ReadOnlyAccessPolicy-v5-${Environment}"
       Groups:
         - Ref: "S3UserGroup"
       PolicyDocument:
@@ -82,7 +65,7 @@ Resources:
   EC2UserGroupPolicy:
     Type: AWS::IAM::Policy
     Properties:
-      PolicyName: !Sub "EC2ReadOnlyAccessPolicy-v3-${Environment}"
+      PolicyName: !Sub "EC2ReadOnlyAccessPolicy-v5-${Environment}"
       Groups:
         - Ref: "EC2UserGroup"
       PolicyDocument:
@@ -96,7 +79,7 @@ Resources:
   EC2User:
     Type: AWS::IAM::User
     Properties:
-      UserName: !Sub "ec2-user-v3-${Environment}"
+      UserName: !Sub "ec2-user-v5-${Environment}"
       Groups:
         - Ref: "EC2UserGroup"
       Tags:
@@ -106,7 +89,7 @@ Resources:
   S3User:
     Type: AWS::IAM::User
     Properties:
-      UserName: !Sub "s3-user-v3-${Environment}"
+      UserName: !Sub "s3-user-v5-${Environment}"
       Groups:
         - Ref: "S3UserGroup"
       Tags:
@@ -116,7 +99,7 @@ Resources:
   EventBridgeRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: !Sub "NewUserCreationRule-${Environment}"
+      Name: !Sub "NewUserCreationRule-v5-${Environment}"
       EventPattern:
         source:
           - "aws.iam"
@@ -132,6 +115,7 @@ Resources:
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub "LogUserCreationRole-v5-${Environment}"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -142,16 +126,13 @@ Resources:
       ManagedPolicyArns:
         - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
       Policies:
-        - PolicyName: !Sub "LogUserCreationPolicy-${Environment}"
+        - PolicyName: !Sub "LogUserCreationPolicy-v5-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: "Allow"
                 Action:
                   - "secretsmanager:GetSecretValue"
-                  - "logs:CreateLogGroup"
-                  - "logs:CreateLogStream"
-                  - "logs:PutLogEvents"
                   - "cloudtrail:LookupEvents"
                   - "iam:ListUserTags"
                 Resource: "*"

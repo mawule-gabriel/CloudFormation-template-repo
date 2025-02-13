@@ -1,120 +1,122 @@
 package org.example;
 
 import com.amazonaws.services.lambda.runtime.Context;
+import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import software.amazon.awssdk.regions.Region;
-import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsClient;
-import software.amazon.awssdk.services.cloudwatchlogs.model.*;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
-import software.amazon.awssdk.services.s3.S3Client;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.util.Collections;
 import java.util.Map;
 
-public class LogUserCreationHandler {
+public class LogUserCreationHandler implements RequestHandler<Map<String, Object>, String> {
+    private static final Logger logger = LoggerFactory.getLogger(LogUserCreationHandler.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final Region s3Region;
-    private final S3Client s3Client;
+    private final Region region;
     private final String secretName;
 
     public LogUserCreationHandler() {
-        // Get S3 bucket region from environment variable
-        String s3BucketRegion = System.getenv("S3_BUCKET_REGION");
-        this.s3Region = Region.of(s3BucketRegion != null ? s3BucketRegion : "us-west-2");
+        // Get region from environment variable with fallback
+        String configuredRegion = System.getenv("CUSTOM_REGION");
+        this.region = Region.of(configuredRegion != null ? configuredRegion : "us-west-2");
 
-        // Initialize S3 client with specific region
-        this.s3Client = S3Client.builder()
-                .region(s3Region)
-                .build();
-
-        // Get environment name from Lambda environment variable
+        // Get environment name with fallback
         String environment = System.getenv("ENVIRONMENT");
         if (environment == null) {
             environment = "dev";
         }
 
-        // Construct the secret name
-        this.secretName = String.format("OneTimePassword-%s-%s", environment, s3Region.id());
+        // Construct secret name with v5 version
+        this.secretName = String.format("OneTimePassword-v5-%s-%s", environment, region.id());
     }
 
+    // Rest of the code remains the same
+    @Override
+    public String handleRequest(Map<String, Object> event, Context context) {
+        try {
+            logger.info("Received event: {}", event);
 
-    public void handleRequest(Map<String, Object> event, Context context) {
-        try (SecretsManagerClient secretsManager = SecretsManagerClient.create();
-             CloudWatchLogsClient cloudWatchLogs = CloudWatchLogsClient.create()) {
-
-            // Extract email from the event details
-            Map<String, Object> detail = (Map<String, Object>) event.get("detail");
-            String email = extractEmailFromRequestParameters(detail);
-
+            // Extract email from event
+            String email = extractEmailFromEvent(event);
             if (email == null) {
-                System.err.println("Email not found in event");
-                return;
+                logger.error("Email not found in event");
+                return "Email not found in event";
             }
 
-            // Retrieve and parse the password from Secrets Manager
-            String password = getPassword(secretsManager);
+            // Get password from Secrets Manager
+            String password = getPassword();
+            if (password == null) {
+                logger.error("Failed to retrieve password from Secrets Manager");
+                return "Failed to retrieve password";
+            }
 
-            // Log to CloudWatch
-            logUserCreation(cloudWatchLogs, email, password);
+            // Log the user creation details
+            logger.info("New User Created:");
+            logger.info("Email: {}", email);
+            logger.info("Temporary Password: {}", password);
+
+            return "User credentials logged successfully";
 
         } catch (Exception e) {
-            System.err.println("Error processing request: " + e.getMessage());
-            throw new RuntimeException(e);
-        } finally {
-            // Close the S3 client
-            s3Client.close();
+            logger.error("Error processing request: {}", e.getMessage(), e);
+            return "Error processing request: " + e.getMessage();
         }
     }
 
-    private String extractEmailFromRequestParameters(Map<String, Object> detail) {
+    private String extractEmailFromEvent(Map<String, Object> event) {
         try {
+            Map<String, Object> detail = (Map<String, Object>) event.get("detail");
+            if (detail == null) {
+                logger.error("Event detail is missing");
+                return null;
+            }
+
             Map<String, Object> requestParameters = (Map<String, Object>) detail.get("requestParameters");
-            if (requestParameters != null) {
-                Map<String, String> tags = (Map<String, String>) requestParameters.get("tags");
-                if (tags != null) {
-                    return tags.get("email");
-                }
+            if (requestParameters == null) {
+                logger.error("Request parameters are missing");
+                return null;
             }
+
+            Map<String, String> tags = (Map<String, String>) requestParameters.get("tags");
+            if (tags == null) {
+                logger.error("Tags are missing");
+                return null;
+            }
+
+            String email = tags.get("email");
+            if (email == null) {
+                logger.error("Email tag is missing");
+                return null;
+            }
+
+            return email;
+
         } catch (Exception e) {
-            System.err.println("Error extracting email: " + e.getMessage());
+            logger.error("Error extracting email: {}", e.getMessage(), e);
+            return null;
         }
-        return null;
     }
 
-    private String getPassword(SecretsManagerClient secretsManager) throws Exception {
-        GetSecretValueRequest request = GetSecretValueRequest.builder()
-                .secretId(secretName)  // Use the constructed secret name
-                .build();
+    private String getPassword() {
+        try (SecretsManagerClient secretsManager = SecretsManagerClient.builder()
+                .region(region)
+                .build()) {
 
-        GetSecretValueResponse response = secretsManager.getSecretValue(request);
-        JsonNode jsonNode = objectMapper.readTree(response.secretString());
-        return jsonNode.get("password").asText();
-    }
-
-    private void logUserCreation(CloudWatchLogsClient cloudWatchLogs, String email, String password) {
-        try {
-            // Get log group and stream names from environment variables
-            String logGroupName = System.getenv("LOG_GROUP_NAME");
-            String logStreamName = System.getenv("LOG_STREAM_NAME");
-
-            InputLogEvent logEvent = InputLogEvent.builder()
-                    .message("User Created: " + email + " | Password: " + password)
-                    .timestamp(System.currentTimeMillis())
+            GetSecretValueRequest request = GetSecretValueRequest.builder()
+                    .secretId(secretName)
                     .build();
 
-            PutLogEventsRequest logRequest = PutLogEventsRequest.builder()
-                    .logGroupName(logGroupName)
-                    .logStreamName(logStreamName)
-                    .logEvents(Collections.singletonList(logEvent))
-                    .build();
+            GetSecretValueResponse response = secretsManager.getSecretValue(request);
+            JsonNode jsonNode = objectMapper.readTree(response.secretString());
+            return jsonNode.get("password").asText();
 
-            cloudWatchLogs.putLogEvents(logRequest);
-        } catch (CloudWatchLogsException e) {
-            System.err.println("Error writing to CloudWatch: " + e.getMessage());
-            throw e;
+        } catch (Exception e) {
+            logger.error("Error retrieving password: {}", e.getMessage(), e);
+            return null;
         }
     }
 }
