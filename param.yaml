@@ -1,0 +1,5 @@
+template-file-path: cloudformation-template.yaml
+parameters:
+  Environment: dev
+  Password: ''
+tags: {}
